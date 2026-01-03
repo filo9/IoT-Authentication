@@ -1,0 +1,44 @@
+# 编译输出目录
+build/
+bin/
+
+# 编译产生的中间文件和可执行文件
+*.o
+*.out
+test_crypto
+test_bio
+test_protocol_flow
+
+# VS Code 配置文件
+.vscode/
+
+# 操作系统生成文件
+.DS_Store
+*.zip
+*.pdf
+*.docx
+
+# 模型文件
+arcface_model/
+*.onnx
+
+# 数据库和历史
+server_data.db
+.aider*
+
+# ── 生物特征大数据（不上传）────────────────────────────────
+# 原始指纹图像数据集
+fvc2002_db1/
+contact_minutiae/
+socofing/
+
+# 提取的特征向量（.dat 二进制文件）
+fingerprint_features/
+*.dat
+
+# results 子目录下的特征和 CSV（只保留测试报告 txt）
+results/*/fingerprint_features/
+results/*/unified_test_plan_vault.csv
+
+# 根目录下的生成 CSV（可由脚本重新生成）
+unified_test_plan_vault.csv
