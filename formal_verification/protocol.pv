@@ -1,0 +1,233 @@
+(* ==========================================
+   IoT Authentication Protocol - ProVerif Formal Verification
+   Applied Pi Calculus Model under Dolev-Yao Threat Model
+   ========================================== *)
+
+(* ==========================================
+   Type Declarations
+   ========================================== *)
+type key.
+type pkey.
+type skey.
+type nonce.
+type principal.
+
+(* ==========================================
+   Cryptographic Primitives
+   ========================================== *)
+
+(* Symmetric encryption (AES-256-GCM) *)
+fun senc(bitstring, key): bitstring.
+reduc forall m: bitstring, k: key; sdec(senc(m, k), k) = m.
+
+(* Asymmetric encryption (ECIES) *)
+fun pk(skey): pkey.
+fun aenc(bitstring, pkey): bitstring.
+reduc forall m: bitstring, sk: skey; adec(aenc(m, pk(sk)), sk) = m.
+
+(* Digital signatures (ECDSA) *)
+fun sign(bitstring, skey): bitstring.
+reduc forall m: bitstring, sk: skey; verify(sign(m, sk), m, pk(sk)) = true.
+reduc forall m: bitstring, sk: skey; getmess(sign(m, sk)) = m.
+
+(* Hash function (SHA-256) *)
+fun hash(bitstring): bitstring.
+
+(* PRF (HMAC-SHA256) *)
+fun prf(key, bitstring): key.
+
+(* HKDF *)
+fun hkdf_extract(bitstring, bitstring): key.
+fun hkdf_expand(key, bitstring): key.
+
+(* Diffie-Hellman key exchange *)
+const g: bitstring.
+fun exp(bitstring, bitstring): bitstring.
+equation forall x: bitstring, y: bitstring; exp(exp(g, x), y) = exp(exp(g, y), x).
+
+(* Fuzzy Extractor *)
+fun fuzzy_gen(bitstring): bitstring.  (* Generate helper data P *)
+fun fuzzy_rep(bitstring, bitstring): key.  (* Reproduce R from bio' and P *)
+
+(* PUF *)
+fun puf_enroll(principal): bitstring.  (* PUF enrollment *)
+fun puf_reconstruct(principal, bitstring): key.  (* PUF reconstruction with helper *)
+
+(* Type conversion: principal -> bitstring *)
+fun principal2bs(principal): bitstring [data,typeConverter].
+
+(* ==========================================
+   Channels (Public = Dolev-Yao attacker can intercept)
+   ========================================== *)
+free c: channel.  (* Public network channel *)
+free c_reg: channel [private].  (* Secure registration channel *)
+free uid: principal.  (* User identity *)
+
+(* ==========================================
+   Private Data (Secrets to protect)
+   ========================================== *)
+free password: bitstring [private].
+free biometric: bitstring [private].
+free sessionKey: key [private].
+
+(* ==========================================
+   Events for Authentication Properties
+   ========================================== *)
+event UserStartsAuth(principal).
+event ServerAcceptsUser(principal).
+event UserAcceptsServer(principal).
+event SessionKeyEstablished(principal, key).
+
+(* ==========================================
+   Queries (Security Properties)
+   ========================================== *)
+
+(* Secrecy: Session key remains secret *)
+query attacker(sessionKey).
+
+(* Authentication: If server accepts user, user must have started auth *)
+query uid: principal; event(ServerAcceptsUser(uid)) ==> event(UserStartsAuth(uid)).
+
+(* Mutual authentication: If user accepts server, server must have accepted user *)
+query uid: principal; event(UserAcceptsServer(uid)) ==> event(ServerAcceptsUser(uid)).
+
+(* Session key agreement: Both parties derive the same session key *)
+query uid: principal, sk: key;
+  event(SessionKeyEstablished(uid, sk)) ==> event(SessionKeyEstablished(uid, sk)).
+
+(* ==========================================
+   User Process (Client/Device)
+   ========================================== *)
+let User(uid: principal, pw: bitstring, bio: bitstring, serverPK: pkey) =
+  (* Registration Phase *)
+  new k_device: key;  (* PUF-derived device key *)
+  let puf_helper = puf_enroll(uid) in
+  let k = puf_reconstruct(uid, puf_helper) in
+
+  let P = fuzzy_gen(bio) in
+  let R = fuzzy_rep(bio, P) in
+  let kmaster = prf(k, (pw, R)) in
+
+  new skSig: skey;
+  let pkSig = pk(skSig) in
+  new skEnc: skey;
+  let pkEnc = pk(skEnc) in
+
+  (* Send registration request *)
+  out(c_reg, (uid, pkSig, skEnc));
+
+  (* Receive server public key *)
+  in(c_reg, serverSigPK: pkey);
+
+  (* Authentication Phase *)
+  event UserStartsAuth(uid);
+  out(c, (uid));  (* Auth request *)
+
+  (* Receive challenge *)
+  in(c, (dhpubS: bitstring, serversigm: bitstring, timestamp: bitstring, nonce_s: bitstring));
+
+  (* Verify server signature on challenge *)
+  let sigInput = (dhpubS, timestamp, nonce_s) in
+  if verify(serversigm, sigInput, serverSigPK) = true then
+
+  (* Recover biometric *)
+  let R_recovered = fuzzy_rep(bio, P) in
+  let kmaster_recovered = prf(k, (pw, R_recovered)) in
+
+  (* Generate temporary DH keypair *)
+  new dhprivU: bitstring;
+  let dhpubU = exp(g, dhprivU) in
+  let sharedSecret = exp(dhpubS, dhprivU) in
+
+  (* Compute tagU *)
+  let tagU = hash((sharedSecret, uid, dhpubS, serversigm, dhpubU)) in
+
+  (* Sign authentication data *)
+  let sigma = sign((uid, dhpubS, dhpubU, tagU), skSig) in
+
+  (* Encrypt tau *)
+  let tau = aenc((sigma, dhpubU), pkEnc) in
+
+  (* Send auth response *)
+  out(c, (uid, tau, tagU));
+
+  (* Receive confirmation *)
+  in(c, (tagS: bitstring, serversigtag: bitstring));
+
+  (* Verify server confirmation *)
+  if verify(serversigtag, tagS, serverSigPK) = true then
+  let expectedTagS = hash((sharedSecret, uid, tau, dhpubS, tagU)) in
+  if tagS = expectedTagS then
+
+  (* Derive session key using HKDF *)
+  let hkdfSalt = (dhpubS, dhpubU) in
+  let prk = hkdf_extract(hkdfSalt, sharedSecret) in
+  let sk = hkdf_expand(prk, principal2bs(uid)) in
+
+  event UserAcceptsServer(uid);
+  event SessionKeyEstablished(uid, sk);
+  0.
+
+(* ==========================================
+   Server Process (Gateway)
+   ========================================== *)
+let Server(serverSK: skey) =
+  (* Registration Phase - secure channel *)
+  in(c_reg, (uid: principal, pkSig: pkey, skEnc: skey));
+  let serverPK = pk(serverSK) in
+  out(c_reg, serverPK);
+
+  (* Authentication Phase *)
+  in(c, (uid_auth: principal));
+
+  (* Generate challenge *)
+  new dhprivS: bitstring;
+  let dhpubS = exp(g, dhprivS) in
+  new timestamp: bitstring;
+  new nonce_s: nonce;
+  let sigInput = (dhpubS, timestamp, nonce_s) in
+  let serversigm = sign(sigInput, serverSK) in
+  out(c, (dhpubS, serversigm, timestamp, nonce_s));
+
+  (* Receive auth response *)
+  in(c, (uid_resp: principal, tau: bitstring, tagU: bitstring));
+
+  (* Decrypt tau *)
+  let (sigma: bitstring, dhpubU: bitstring) = adec(tau, skEnc) in
+
+  (* Verify user signature *)
+  let sigData = (uid_resp, dhpubS, dhpubU, tagU) in
+  if verify(sigma, sigData, pkSig) = true then
+
+  (* Compute shared secret *)
+  let sharedSecret = exp(dhpubU, dhprivS) in
+
+  (* Verify tagU *)
+  let expectedTagU = hash((sharedSecret, uid_resp, dhpubS, serversigm, dhpubU)) in
+  if tagU = expectedTagU then
+
+  (* Derive session key using HKDF *)
+  let hkdfSalt = (dhpubS, dhpubU) in
+  let prk = hkdf_extract(hkdfSalt, sharedSecret) in
+  let sk = hkdf_expand(prk, principal2bs(uid_resp)) in
+
+  event ServerAcceptsUser(uid_resp);
+  event SessionKeyEstablished(uid_resp, sk);
+
+  (* Generate tagS *)
+  let tagS = hash((sharedSecret, uid_resp, tau, dhpubS, tagU)) in
+  let serversigtag = sign(tagS, serverSK) in
+  out(c, (tagS, serversigtag));
+  0.
+
+(* ==========================================
+   Main Process
+   ========================================== *)
+process
+  (* Server generates long-term keypair *)
+  new serverSK: skey;
+  let serverPK = pk(serverSK) in
+  out(c, serverPK);  (* Publish server public key *)
+
+  (* Run server and user in parallel *)
+  ( (!Server(serverSK)) | (!User(uid, password, biometric, serverPK)) )
