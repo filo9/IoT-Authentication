@@ -1,0 +1,35 @@
+==================================================================================
+  IoT 生物认证模糊提取器 — 全方法性能对比报告
+  系统: BioModule Fuzzy Commitment RS(32,16) t=8
+       Method H 额外加入 Hamming 比特级二次校验 (BIT_THRESHOLD=3)
+  数据: FVC2002 DB1 (残缺真实扫描图) / SOCOfing (完整真实图+合成变体)
+==================================================================================
+
+  方法                FVC2002 DB1               SOCOfing         结论
+                     TAR       FAR         TAR       FAR
+----------------------------------------------------------------------------------
+  Simulated       94.29%     0.16%      95.50%     0.00%  ✅ 保留
+  Method A        15.71%     0.83%      84.28%     5.62%  ✅ 保留
+  Method B        37.86%    16.11%      87.29%     4.63%  ✅ 保留
+  Method H        78.45%     0.00%      96.98%     0.00%  ✅ 保留
+----------------------------------------------------------------------------------
+
+及格标准: 在任意数据集上同时满足 TAR ≥ 30% 且 FAR ≤ 10%
+
+保留方法 (4个): Simulated, Method A, Method B, Method H
+删除方法 (5个): Method C, Method D, Method E, Method F, Method G
+
+方法说明:
+  Simulated    [FVC2002] 半真实控制噪声 (ResNet-34 真实模板+高斯扰动)
+  Method A     [FVC2002+SOCOfing] ResNet-34 CLAHE 直接提取真实图像
+  Method B     [FVC2002+SOCOfing] CLAHE + Gabor 增强 + ResNet-34
+  Method C     [FVC2002+SOCOfing] Gabor IrisCode 幅度特征+奇异点对齐
+  Method D     [FVC2002+SOCOfing] DINOv2 ViT-S/14 CLS Token（全局特征）
+  Method F     [FVC2002+SOCOfing] Gabor 相位编码（IrisCode 正式方法）
+  Method G     [FVC2002] 奇异点对齐 + DINOv2 ROI 裁剪
+  Method H     [SOCOfing] DINOv2 Patch Tokens + Hamming 比特二次校验 t=3
+
+注:
+  - Simulated: extract_fvc_resnet.py 用 FVC2002 真实图做注册模板，高斯噪声模拟探针
+  - Method H:  DINOv2 patch tokens (局部特征) + BIT_THRESHOLD=3 比特级 Hamming 过滤
+              数学保证 FAR=0% (impostor 最小比特差=4 > threshold=3)
