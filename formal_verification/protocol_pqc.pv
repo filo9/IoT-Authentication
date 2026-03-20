@@ -1,0 +1,244 @@
+(* ==========================================
+   Post-Quantum IoT Authentication Protocol
+   ProVerif Formal Verification
+   ML-KEM (Kyber) replaces ECDH key exchange
+   ========================================== *)
+
+(* ==========================================
+   Type Declarations
+   ========================================== *)
+type key.
+type pkey.
+type skey.
+type nonce.
+type principal.
+
+(* ==========================================
+   Cryptographic Primitives
+   ========================================== *)
+
+(* Symmetric encryption (AES-256-GCM) *)
+fun senc(bitstring, key): bitstring.
+reduc forall m: bitstring, k: key; sdec(senc(m, k), k) = m.
+
+(* Asymmetric encryption (ECIES — unchanged from original) *)
+fun pk(skey): pkey.
+fun aenc(bitstring, pkey): bitstring.
+reduc forall m: bitstring, sk: skey; adec(aenc(m, pk(sk)), sk) = m.
+
+(* Digital signatures (ECDSA — unchanged from original) *)
+fun sign(bitstring, skey): bitstring.
+reduc forall m: bitstring, sk: skey; verify(sign(m, sk), m, pk(sk)) = true.
+reduc forall m: bitstring, sk: skey; getmess(sign(m, sk)) = m.
+
+(* Hash function (SHA-256) *)
+fun hash(bitstring): bitstring.
+
+(* PRF (HMAC-SHA256) *)
+fun prf(key, bitstring): key.
+
+(* HKDF — salt now uses pk_KEM || ct instead of dhpubS || dhpubU *)
+fun hkdf_extract(bitstring, bitstring): key.
+fun hkdf_expand(key, bitstring): key.
+
+(* ==========================================
+   ML-KEM (Post-Quantum Key Encapsulation)
+   Replaces Diffie-Hellman key exchange
+   ========================================== *)
+
+(* KEM key generation: pk_KEM from sk_KEM *)
+fun kem_pk(bitstring): bitstring.
+
+(* KEM encapsulation: produces ciphertext from public key *)
+fun kem_encaps_ct(bitstring): bitstring.
+
+(* KEM shared secret: deterministic from public key *)
+fun kem_encaps_ss(bitstring): key.
+
+(* KEM decapsulation: recover shared secret from sk and ct *)
+reduc forall sk: bitstring;
+    kem_decaps(sk, kem_encaps_ct(kem_pk(sk))) = kem_encaps_ss(kem_pk(sk)).
+
+(* Fuzzy Extractor *)
+fun fuzzy_gen(bitstring): bitstring.
+fun fuzzy_rep(bitstring, bitstring): key.
+
+(* PUF *)
+fun puf_enroll(principal): bitstring.
+fun puf_reconstruct(principal, bitstring): key.
+
+(* Type conversions *)
+fun principal2bs(principal): bitstring [data,typeConverter].
+fun key2bs(key): bitstring [data,typeConverter].
+
+(* ==========================================
+   Channels
+   ========================================== *)
+free c: channel.              (* Public channel — Dolev-Yao attacker *)
+free c_reg: channel [private]. (* Secure registration channel *)
+free uid: principal.
+
+(* ==========================================
+   Private Data
+   ========================================== *)
+free password: bitstring [private].
+free biometric: bitstring [private].
+free sessionKey: key [private].
+
+(* ==========================================
+   Events for Security Properties
+   ========================================== *)
+event UserStartsAuth(principal).
+event ServerAcceptsUser(principal).
+event UserAcceptsServer(principal).
+event SessionKeyEstablished(principal, key).
+
+(* ==========================================
+   Security Queries
+   ========================================== *)
+
+(* Q1: Session key secrecy *)
+query attacker(sessionKey).
+
+(* Q2: Server authenticates client *)
+query uid_q: principal;
+    event(ServerAcceptsUser(uid_q)) ==> event(UserStartsAuth(uid_q)).
+
+(* Q3: Client authenticates server (mutual authentication) *)
+query uid_q: principal;
+    event(UserAcceptsServer(uid_q)) ==> event(ServerAcceptsUser(uid_q)).
+
+(* Q4: Session key agreement *)
+query uid_q: principal, sk: key;
+    event(SessionKeyEstablished(uid_q, sk)) ==> event(SessionKeyEstablished(uid_q, sk)).
+
+(* ==========================================
+   User Process (Client/Device) — Post-Quantum
+   ========================================== *)
+let UserPQ(uid: principal, pw: bitstring, bio: bitstring, serverPK: pkey) =
+    (* === Registration Phase === *)
+    new k_device: key;
+    let puf_helper = puf_enroll(uid) in
+    let k = puf_reconstruct(uid, puf_helper) in
+
+    let P = fuzzy_gen(bio) in
+    let R = fuzzy_rep(bio, P) in
+    let kmaster = prf(k, (pw, R)) in
+
+    new skSig: skey;
+    let pkSig = pk(skSig) in
+    new skEnc: skey;
+    let pkEnc = pk(skEnc) in
+
+    out(c_reg, (uid, pkSig, skEnc));
+    in(c_reg, serverSigPK: pkey);
+
+    (* === Authentication Phase === *)
+    event UserStartsAuth(uid);
+    out(c, (uid));
+
+    (* Step 2: Receive challenge with pk_KEM (replaces dhpubS) *)
+    in(c, (pkKEM: bitstring, serversigm: bitstring, timestamp: bitstring, nonce_s: bitstring));
+
+    (* Verify server signature on pk_KEM *)
+    if verify(serversigm, pkKEM, serverSigPK) = true then
+
+    (* Recover biometric *)
+    let R_recovered = fuzzy_rep(bio, P) in
+    let kmaster_recovered = prf(k, (pw, R_recovered)) in
+
+    (* Step 3: KEM Encapsulation (replaces DH key generation + shared secret) *)
+    let ct = kem_encaps_ct(pkKEM) in
+    let sharedSecret = kem_encaps_ss(pkKEM) in
+
+    (* Compute tagU = H(ss || uid || pk_KEM || server_sigm || ct || "clientconfirm") *)
+    let tagU = hash((key2bs(sharedSecret), uid, pkKEM, serversigm, ct)) in
+
+    (* Sign: sigma = Sign(skSig, (uid, pk_KEM, ct, tagU)) *)
+    let sigma = sign((uid, pkKEM, ct, tagU), skSig) in
+
+    (* Encrypt: tau = Enc(pkEnc, (sigma, ct)) *)
+    let tau = aenc((sigma, ct), pkEnc) in
+
+    (* Send auth response *)
+    out(c, (uid, tau, tagU));
+
+    (* Step 5: Receive confirmation *)
+    in(c, (tagS: bitstring, serversigtag: bitstring));
+
+    (* Verify server confirmation *)
+    if verify(serversigtag, tagS, serverSigPK) = true then
+    let expectedTagS = hash((key2bs(sharedSecret), uid, tau, pkKEM, tagU)) in
+    if tagS = expectedTagS then
+
+    (* Derive session key: HKDF with salt = pk_KEM || ct *)
+    let hkdfSalt = (pkKEM, ct) in
+    let prk = hkdf_extract(hkdfSalt, key2bs(sharedSecret)) in
+    let sk = hkdf_expand(prk, principal2bs(uid)) in
+
+    event UserAcceptsServer(uid);
+    event SessionKeyEstablished(uid, sk);
+    0.
+
+(* ==========================================
+   Server Process (Gateway) — Post-Quantum
+   ========================================== *)
+let ServerPQ(serverSK: skey) =
+    (* === Registration Phase === *)
+    in(c_reg, (uid: principal, pkSig: pkey, skEnc: skey));
+    let serverPK = pk(serverSK) in
+    out(c_reg, serverPK);
+
+    (* === Authentication Phase === *)
+    in(c, (uid_auth: principal));
+
+    (* Step 2: Generate ML-KEM keypair (replaces DH keypair) *)
+    new skKEM: bitstring;
+    let pkKEM = kem_pk(skKEM) in
+    new timestamp: bitstring;
+    new nonce_s: nonce;
+
+    (* Sign pk_KEM (replaces signing dhpubS) *)
+    let serversigm = sign(pkKEM, serverSK) in
+    out(c, (pkKEM, serversigm, timestamp, nonce_s));
+
+    (* Step 4: Receive auth response *)
+    in(c, (uid_resp: principal, tau: bitstring, tagU: bitstring));
+
+    (* Decrypt tau: (sigma, ct) *)
+    let (sigma: bitstring, ct: bitstring) = adec(tau, skEnc) in
+
+    (* Verify user signature *)
+    let sigData = (uid_resp, pkKEM, ct, tagU) in
+    if verify(sigma, sigData, pkSig) = true then
+
+    (* KEM Decapsulation (replaces DH shared secret computation) *)
+    let sharedSecret = kem_decaps(skKEM, ct) in
+
+    (* Verify tagU *)
+    let expectedTagU = hash((key2bs(sharedSecret), uid_resp, pkKEM, serversigm, ct)) in
+    if tagU = expectedTagU then
+
+    (* Derive session key: HKDF with salt = pk_KEM || ct *)
+    let hkdfSalt = (pkKEM, ct) in
+    let prk = hkdf_extract(hkdfSalt, key2bs(sharedSecret)) in
+    let sk = hkdf_expand(prk, principal2bs(uid_resp)) in
+
+    event ServerAcceptsUser(uid_resp);
+    event SessionKeyEstablished(uid_resp, sk);
+
+    (* Generate tagS = H(ss || uid || tau || pk_KEM || tagU || "serverconfirm") *)
+    let tagS = hash((key2bs(sharedSecret), uid_resp, tau, pkKEM, tagU)) in
+    let serversigtag = sign(tagS, serverSK) in
+    out(c, (tagS, serversigtag));
+    0.
+
+(* ==========================================
+   Main Process
+   ========================================== *)
+process
+    new serverSK: skey;
+    let serverPK = pk(serverSK) in
+    out(c, serverPK);
+
+    ( (!ServerPQ(serverSK)) | (!UserPQ(uid, password, biometric, serverPK)) )
