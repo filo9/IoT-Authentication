@@ -1,0 +1,203 @@
+File "formal_verification/protocol.pv", line 176, characters 14-16:
+Warning: identifier uid rebound.
+Linear part:
+exp(exp(g,x),y) = exp(exp(g,y),x)
+Completing equations...
+Completed equations:
+exp(exp(g,x),y) = exp(exp(g,y),x)
+Convergent part: No equation.
+Process 0 (that is, the initial process):
+{1}new serverSK: skey;
+{2}let serverPK: pkey = pk(serverSK) in
+{3}out(c, serverPK);
+(
+    {4}!
+    {5}let serverSK_1: skey = serverSK in
+    {6}in(c_reg, (uid_1: principal,pkSig: pkey,skEnc: skey));
+    {7}let serverPK_1: pkey = pk(serverSK_1) in
+    {8}out(c_reg, serverPK_1);
+    {9}in(c, uid_auth: principal);
+    {10}new dhprivS: bitstring;
+    {11}let dhpubS: bitstring = exp(g,dhprivS) in
+    {12}new timestamp: bitstring;
+    {13}new nonce_s: nonce;
+    {14}let sigInput: bitstring = (dhpubS,timestamp,nonce_s) in
+    {15}let serversigm: bitstring = sign(sigInput,serverSK_1) in
+    {16}out(c, (dhpubS,serversigm,timestamp,nonce_s));
+    {17}in(c, (uid_resp: principal,tau: bitstring,tagU: bitstring));
+    {18}let (sigma: bitstring,dhpubU: bitstring) = adec(tau,skEnc) in
+    {19}let sigData: bitstring = (uid_resp,dhpubS,dhpubU,tagU) in
+    {20}if (verify(sigma,sigData,pkSig) = true) then
+    {21}let sharedSecret: bitstring = exp(dhpubU,dhprivS) in
+    {22}let expectedTagU: bitstring = hash((sharedSecret,uid_resp,dhpubS,serversigm,dhpubU)) in
+    {23}if (tagU = expectedTagU) then
+    {24}let hkdfSalt: bitstring = (dhpubS,dhpubU) in
+    {25}let prk: key = hkdf_extract(hkdfSalt,sharedSecret) in
+    {26}let sk: key = hkdf_expand(prk,uid_resp) in
+    {27}event ServerAcceptsUser(uid_resp);
+    {28}event SessionKeyEstablished(uid_resp,sk);
+    {29}let tagS: bitstring = hash((sharedSecret,uid_resp,tau,dhpubS,tagU)) in
+    {30}let serversigtag: bitstring = sign(tagS,serverSK_1) in
+    {31}out(c, (tagS,serversigtag))
+) | (
+    {32}!
+    {33}let uid_2: principal = uid in
+    {34}let pw: bitstring = password in
+    {35}let bio: bitstring = biometric in
+    {36}new k_device: key;
+    {37}let puf_helper: bitstring = puf_enroll(uid_2) in
+    {38}let k: key = puf_reconstruct(uid_2,puf_helper) in
+    {39}let P: bitstring = fuzzy_gen(bio) in
+    {40}let R: key = fuzzy_rep(bio,P) in
+    {41}let kmaster: key = prf(k,(pw,R)) in
+    {42}new skSig: skey;
+    {43}let pkSig_1: pkey = pk(skSig) in
+    {44}new skEnc_1: skey;
+    {45}let pkEnc: pkey = pk(skEnc_1) in
+    {46}out(c_reg, (uid_2,pkSig_1,skEnc_1));
+    {47}in(c_reg, serverSigPK: pkey);
+    {48}event UserStartsAuth(uid_2);
+    {49}out(c, uid_2);
+    {50}in(c, (dhpubS_1: bitstring,serversigm_1: bitstring,timestamp_1: bitstring,nonce_s_1: bitstring));
+    {51}let sigInput_1: bitstring = (dhpubS_1,timestamp_1,nonce_s_1) in
+    {52}if (verify(serversigm_1,sigInput_1,serverSigPK) = true) then
+    {53}let R_recovered: key = fuzzy_rep(bio,P) in
+    {54}let kmaster_recovered: key = prf(k,(pw,R_recovered)) in
+    {55}new dhprivU: bitstring;
+    {56}let dhpubU_1: bitstring = exp(g,dhprivU) in
+    {57}let sharedSecret_1: bitstring = exp(dhpubS_1,dhprivU) in
+    {58}let tagU_1: bitstring = hash((sharedSecret_1,uid_2,dhpubS_1,serversigm_1,dhpubU_1)) in
+    {59}let sigma_1: bitstring = sign((uid_2,dhpubS_1,dhpubU_1,tagU_1),skSig) in
+    {60}let tau_1: bitstring = aenc((sigma_1,dhpubU_1),pkEnc) in
+    {61}out(c, (uid_2,tau_1,tagU_1));
+    {62}in(c, (tagS_1: bitstring,serversigtag_1: bitstring));
+    {63}if (verify(serversigtag_1,tagS_1,serverSigPK) = true) then
+    {64}let expectedTagS: bitstring = hash((sharedSecret_1,uid_2,tau_1,dhpubS_1,tagU_1)) in
+    {65}if (tagS_1 = expectedTagS) then
+    {66}let hkdfSalt_1: bitstring = (dhpubS_1,dhpubU_1) in
+    {67}let prk_1: key = hkdf_extract(hkdfSalt_1,sharedSecret_1) in
+    {68}let sk_1: key = hkdf_expand(prk_1,uid_2) in
+    {69}event UserAcceptsServer(uid_2);
+    {70}event SessionKeyEstablished(uid_2,sk_1)
+)
+
+File "formal_verification/protocol.pv", line 89, characters 7-9:
+Warning: identifier uid rebound.
+File "formal_verification/protocol.pv", line 92, characters 7-9:
+Warning: identifier uid rebound.
+File "formal_verification/protocol.pv", line 95, characters 7-9:
+Warning: identifier uid rebound.
+--  Process 1 (that is, process 0, with let moved downwards):
+{1}new serverSK: skey;
+{2}let serverPK: pkey = pk(serverSK) in
+{3}out(c, serverPK);
+(
+    {4}!
+    {6}in(c_reg, (uid_1: principal,pkSig: pkey,skEnc: skey));
+    {5}let serverSK_1: skey = serverSK in
+    {7}let serverPK_1: pkey = pk(serverSK_1) in
+    {8}out(c_reg, serverPK_1);
+    {9}in(c, uid_auth: principal);
+    {10}new dhprivS: bitstring;
+    {12}new timestamp: bitstring;
+    {13}new nonce_s: nonce;
+    {11}let dhpubS: bitstring = exp(g,dhprivS) in
+    {14}let sigInput: bitstring = (dhpubS,timestamp,nonce_s) in
+    {15}let serversigm: bitstring = sign(sigInput,serverSK_1) in
+    {16}out(c, (dhpubS,serversigm,timestamp,nonce_s));
+    {17}in(c, (uid_resp: principal,tau: bitstring,tagU: bitstring));
+    {18}let (sigma: bitstring,dhpubU: bitstring) = adec(tau,skEnc) in
+    {19}let sigData: bitstring = (uid_resp,dhpubS,dhpubU,tagU) in
+    {20}if (verify(sigma,sigData,pkSig) = true) then
+    {21}let sharedSecret: bitstring = exp(dhpubU,dhprivS) in
+    {22}let expectedTagU: bitstring = hash((sharedSecret,uid_resp,dhpubS,serversigm,dhpubU)) in
+    {23}if (tagU = expectedTagU) then
+    {27}event ServerAcceptsUser(uid_resp);
+    {24}let hkdfSalt: bitstring = (dhpubS,dhpubU) in
+    {25}let prk: key = hkdf_extract(hkdfSalt,sharedSecret) in
+    {26}let sk: key = hkdf_expand(prk,uid_resp) in
+    {28}event SessionKeyEstablished(uid_resp,sk);
+    {29}let tagS: bitstring = hash((sharedSecret,uid_resp,tau,dhpubS,tagU)) in
+    {30}let serversigtag: bitstring = sign(tagS,serverSK_1) in
+    {31}out(c, (tagS,serversigtag))
+) | (
+    {32}!
+    {36}new k_device: key;
+    {42}new skSig: skey;
+    {44}new skEnc_1: skey;
+    {43}let pkSig_1: pkey = pk(skSig) in
+    {33}let uid_2: principal = uid in
+    {46}out(c_reg, (uid_2,pkSig_1,skEnc_1));
+    {47}in(c_reg, serverSigPK: pkey);
+    {48}event UserStartsAuth(uid_2);
+    {49}out(c, uid_2);
+    {50}in(c, (dhpubS_1: bitstring,serversigm_1: bitstring,timestamp_1: bitstring,nonce_s_1: bitstring));
+    {51}let sigInput_1: bitstring = (dhpubS_1,timestamp_1,nonce_s_1) in
+    {52}if (verify(serversigm_1,sigInput_1,serverSigPK) = true) then
+    {55}new dhprivU: bitstring;
+    {57}let sharedSecret_1: bitstring = exp(dhpubS_1,dhprivU) in
+    {56}let dhpubU_1: bitstring = exp(g,dhprivU) in
+    {58}let tagU_1: bitstring = hash((sharedSecret_1,uid_2,dhpubS_1,serversigm_1,dhpubU_1)) in
+    {59}let sigma_1: bitstring = sign((uid_2,dhpubS_1,dhpubU_1,tagU_1),skSig) in
+    {45}let pkEnc: pkey = pk(skEnc_1) in
+    {60}let tau_1: bitstring = aenc((sigma_1,dhpubU_1),pkEnc) in
+    {61}out(c, (uid_2,tau_1,tagU_1));
+    {62}in(c, (tagS_1: bitstring,serversigtag_1: bitstring));
+    {63}if (verify(serversigtag_1,tagS_1,serverSigPK) = true) then
+    {64}let expectedTagS: bitstring = hash((sharedSecret_1,uid_2,tau_1,dhpubS_1,tagU_1)) in
+    {65}if (tagS_1 = expectedTagS) then
+    {69}event UserAcceptsServer(uid_2);
+    {66}let hkdfSalt_1: bitstring = (dhpubS_1,dhpubU_1) in
+    {67}let prk_1: key = hkdf_extract(hkdfSalt_1,sharedSecret_1) in
+    {68}let sk_1: key = hkdf_expand(prk_1,uid_2) in
+    {70}event SessionKeyEstablished(uid_2,sk_1)
+)
+
+-- Query not attacker(sessionKey[]) in process 1.
+Translating the process into Horn clauses...
+Completing...
+200 rules inserted. Base: 151 rules (41 with conclusion selected). Queue: 13 rules.
+Starting query not attacker(sessionKey[])
+RESULT not attacker(sessionKey[]) is true.
+-- Query event(ServerAcceptsUser(uid_3)) ==> event(UserStartsAuth(uid_3)) in process 1.
+Translating the process into Horn clauses...
+Completing...
+200 rules inserted. Base: 150 rules (41 with conclusion selected). Queue: 25 rules.
+Starting query event(ServerAcceptsUser(uid_3)) ==> event(UserStartsAuth(uid_3))
+goal reachable: begin(UserStartsAuth(uid[])) -> end(ServerAcceptsUser(uid[]))
+RESULT event(ServerAcceptsUser(uid_3)) ==> event(UserStartsAuth(uid_3)) is true.
+-- Query event(UserAcceptsServer(uid_3)) ==> event(ServerAcceptsUser(uid_3)) in process 1.
+Translating the process into Horn clauses...
+Completing...
+200 rules inserted. Base: 152 rules (41 with conclusion selected). Queue: 24 rules.
+Starting query event(UserAcceptsServer(uid_3)) ==> event(ServerAcceptsUser(uid_3))
+goal reachable: begin(ServerAcceptsUser(uid[])) -> end(UserAcceptsServer(uid[]))
+RESULT event(UserAcceptsServer(uid_3)) ==> event(ServerAcceptsUser(uid_3)) is true.
+-- Query event(SessionKeyEstablished(uid_3,sk_2)) ==> event(SessionKeyEstablished(uid_3,sk_2)) in process 1.
+Translating the process into Horn clauses...
+Completing...
+200 rules inserted. Base: 147 rules (38 with conclusion selected). Queue: 33 rules.
+Starting query event(SessionKeyEstablished(uid_3,sk_2)) ==> event(SessionKeyEstablished(uid_3,sk_2))
+goal reachable: attacker(uid_auth_1) -> end(SessionKeyEstablished(uid[],hkdf_expand(hkdf_extract((exp(g,dhprivS_1),exp(g,dhprivU_1)),exp(exp(g,dhprivS_1),dhprivU_1)),uid[])))
+Abbreviations:
+skEnc_2 = skEnc_1[!1 = @sid]
+skSig_1 = skSig[!1 = @sid]
+dhprivS_1 = dhprivS[uid_auth = uid_auth_1,skEnc = skEnc_2,pkSig = pk(skSig_1),uid_1 = uid[],!1 = @sid_1]
+nonce_s_2 = nonce_s[uid_auth = uid_auth_1,skEnc = skEnc_2,pkSig = pk(skSig_1),uid_1 = uid[],!1 = @sid_1]
+timestamp_2 = timestamp[uid_auth = uid_auth_1,skEnc = skEnc_2,pkSig = pk(skSig_1),uid_1 = uid[],!1 = @sid_1]
+dhprivU_1 = dhprivU[nonce_s_1 = nonce_s_2,timestamp_1 = timestamp_2,serversigm_1 = sign((exp(g,dhprivS_1),timestamp_2,nonce_s_2),serverSK[]),dhpubS_1 = exp(g,dhprivS_1),serverSigPK = pk(serverSK[]),!1 = @sid]
+RESULT event(SessionKeyEstablished(uid_3,sk_2)) ==> event(SessionKeyEstablished(uid_3,sk_2)) is true.
+
+--------------------------------------------------------------
+Verification summary:
+
+Query not attacker(sessionKey[]) is true.
+
+Query event(ServerAcceptsUser(uid_3)) ==> event(UserStartsAuth(uid_3)) is true.
+
+Query event(UserAcceptsServer(uid_3)) ==> event(ServerAcceptsUser(uid_3)) is true.
+
+Query event(SessionKeyEstablished(uid_3,sk_2)) ==> event(SessionKeyEstablished(uid_3,sk_2)) is true.
+
+--------------------------------------------------------------
+
