@@ -22,9 +22,8 @@ add_library(${CMAKE_PROJECT_NAME} SHARED
         CryptoModule.cpp
         DeterministicECC.cpp
         ReedSolomon.cpp
-        SecureCredentialManager.cpp
+        TEEKeyModule.cpp
         SecureRecordLayer.cpp
-        PUFModule.cpp
 )
 
 # 4. 引入头文件路径 (Modern CMake 方式)

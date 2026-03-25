@@ -10,9 +10,17 @@
 #include "User.h"
 #include <functional>
 #include "BioModule.h"
+#include "TEEKeyModule.h"
 #include <android/log.h>
 #define LOG_TAG "IoT_Auth_Native"
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
+
+// =========================================================
+// 全局 JVM 引用 — 供 Keystore 回调跨线程使用
+// =========================================================
+static JavaVM* g_jvm = nullptr;
+static jobject g_mainActivityRef = nullptr;  // 全局强引用，防止 GC 回收
+
 // 全局设备指针与存储路径声明
 std::unique_ptr<User> g_device = nullptr;
 std::string g_storagePath = "";
@@ -481,4 +489,139 @@ Java_com_filo_iotauth_MainActivity_decryptResponse(JNIEnv* env, jobject /* this 
         LOGE("🛑 解密网关回执失败 (可能遭遇篡改或重放): %s", e.what());
         return env->NewStringUTF("");
     }
+}
+
+// =========================================================
+// JNI_OnLoad — 保存 JavaVM 指针，供跨线程 JNI 回调使用
+// =========================================================
+JNIEXPORT jint JNI_OnLoad(JavaVM* vm, void* /*reserved*/) {
+    g_jvm = vm;
+    return JNI_VERSION_1_6;
+}
+
+// =========================================================
+// JNI 接口 8：注册 Android Keystore HMAC 回调到 TEEKeyModule
+//
+// 调用时机：Kotlin 层 initDeviceInstance() 中，initDevice() 之后立即调用。
+// 原理：
+//   构造一个 C++ lambda，捕获 JavaVM* 和 jobject(MainActivity)。
+//   lambda 内部通过 AttachCurrentThread 获取 JNIEnv，
+//   然后反调 Kotlin 的 performKeystoreHmac(keyAlias, dataBase64)，
+//   将结果 Base64 解码后返回给 TEEKeyModule。
+// =========================================================
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_filo_iotauth_MainActivity_registerKeystoreCallback(JNIEnv* env, jobject thiz) {
+    if (g_jvm == nullptr) {
+        LOGE("❌ registerKeystoreCallback: g_jvm 为空，JNI_OnLoad 未执行");
+        return JNI_FALSE;
+    }
+
+    // 释放旧的全局引用（防止重复注册时泄漏）
+    if (g_mainActivityRef != nullptr) {
+        env->DeleteGlobalRef(g_mainActivityRef);
+        g_mainActivityRef = nullptr;
+    }
+
+    // 创建 MainActivity 的全局强引用，防止 GC 在回调时回收
+    g_mainActivityRef = env->NewGlobalRef(thiz);
+    if (g_mainActivityRef == nullptr) {
+        LOGE("❌ registerKeystoreCallback: NewGlobalRef 失败");
+        return JNI_FALSE;
+    }
+
+    // 构造 C++ 回调 lambda，注册到 TEEKeyModule
+    TEEKeyModule::KeystoreHmacFn callback = [](const std::string& keyAlias,
+                                               const std::vector<uint8_t>& data) -> std::vector<uint8_t>
+    {
+        if (g_jvm == nullptr || g_mainActivityRef == nullptr) {
+            LOGE("❌ Keystore 回调：g_jvm 或 g_mainActivityRef 为空");
+            return {};
+        }
+
+        // 附加当前线程到 JVM（若已附加则直接获取 env）
+        JNIEnv* cbEnv = nullptr;
+        bool needDetach = false;
+        jint attachResult = g_jvm->GetEnv(reinterpret_cast<void**>(&cbEnv), JNI_VERSION_1_6);
+        if (attachResult == JNI_EDETACHED) {
+            if (g_jvm->AttachCurrentThread(&cbEnv, nullptr) != JNI_OK) {
+                LOGE("❌ Keystore 回调：AttachCurrentThread 失败");
+                return {};
+            }
+            needDetach = true;
+        } else if (attachResult != JNI_OK) {
+            LOGE("❌ Keystore 回调：GetEnv 失败");
+            return {};
+        }
+
+        std::vector<uint8_t> result;
+
+        // 获取 MainActivity 的 Class 和 performKeystoreHmac 方法 ID
+        jclass clazz = cbEnv->GetObjectClass(g_mainActivityRef);
+        jmethodID hmacMethod = cbEnv->GetMethodID(
+            clazz,
+            "performKeystoreHmac",
+            "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;"
+        );
+
+        if (hmacMethod == nullptr) {
+            LOGE("❌ Keystore 回调：找不到 performKeystoreHmac 方法");
+            cbEnv->DeleteLocalRef(clazz);
+            if (needDetach) g_jvm->DetachCurrentThread();
+            return {};
+        }
+
+        // 将 data 编码为 Base64 传给 Kotlin（JNI 不能直接传 byte[]，用 String 更简洁）
+        std::string dataB64;
+        {
+            std::vector<uint8_t> encoded(4 * ((data.size() + 2) / 3) + 1);
+            int len = EVP_EncodeBlock(encoded.data(), data.data(), static_cast<int>(data.size()));
+            dataB64 = std::string(encoded.begin(), encoded.begin() + len);
+        }
+
+        jstring jKeyAlias = cbEnv->NewStringUTF(keyAlias.c_str());
+        jstring jDataB64  = cbEnv->NewStringUTF(dataB64.c_str());
+
+        // 调用 Kotlin performKeystoreHmac(keyAlias, dataBase64): String
+        auto jResultStr = reinterpret_cast<jstring>(
+            cbEnv->CallObjectMethod(g_mainActivityRef, hmacMethod, jKeyAlias, jDataB64)
+        );
+
+        cbEnv->DeleteLocalRef(jKeyAlias);
+        cbEnv->DeleteLocalRef(jDataB64);
+        cbEnv->DeleteLocalRef(clazz);
+
+        if (jResultStr != nullptr) {
+            const char* resultCStr = cbEnv->GetStringUTFChars(jResultStr, nullptr);
+            std::string resultB64(resultCStr);
+            cbEnv->ReleaseStringUTFChars(jResultStr, resultCStr);
+            cbEnv->DeleteLocalRef(jResultStr);
+
+            // Base64 解码 Kotlin 返回的 HMAC 结果
+            if (!resultB64.empty()) {
+                std::vector<uint8_t> decoded(resultB64.size());
+                EVP_ENCODE_CTX* ctx = EVP_ENCODE_CTX_new();
+                EVP_DecodeInit(ctx);
+                int outl = 0, total = 0;
+                if (EVP_DecodeUpdate(ctx, decoded.data(), &outl,
+                                     reinterpret_cast<const uint8_t*>(resultB64.data()),
+                                     static_cast<int>(resultB64.size())) >= 0) {
+                    total = outl;
+                    if (EVP_DecodeFinal(ctx, decoded.data() + outl, &outl) >= 0) {
+                        total += outl;
+                        decoded.resize(total);
+                        result = std::move(decoded);
+                        LOGE("✅ Keystore HMAC 回调成功，输出 %d 字节", static_cast<int>(result.size()));
+                    }
+                }
+                EVP_ENCODE_CTX_free(ctx);
+            }
+        }
+
+        if (needDetach) g_jvm->DetachCurrentThread();
+        return result;
+    };
+
+    TEEKeyModule::RegisterKeystoreHmacCallback(callback);
+    LOGE("✅ Android Keystore HMAC 回调已注册到 TEEKeyModule");
+    return JNI_TRUE;
 }

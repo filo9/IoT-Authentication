@@ -21,16 +21,14 @@ ProtocolMessages::RegistrationRequest User::GenerateRegistrationRequest(
     // 1. 生物特征处理: R, P <- FuzzyExtractor.Gen(bio) 
     auto feData = BioModule::Gen(biometric);
 
-    // 2. PRF密钥生成: k <- PUF(deviceUID)
-    // 使用 PUF 生成物理不可克隆的硬件密钥
-    std::string device_pin = GetDeviceHardwareID();
+    // 2. 设备密钥派生: K <- TEEKeyModule.Enroll(deviceUID)
+    // Android 端优先使用 Keystore TEE；不可用时降级为 PBKDF2
     std::string keystore_file = g_storagePath + "user_" + m_uid + "_keystore.dat";
-
-    m_secureManager.GenerateAndWrapCredential(m_uid, device_pin, keystore_file);
+    SecureBytes deviceKey = TEEKeyModule::Enroll(m_uid, keystore_file);
 
     // 3. 主密钥派生: kmaster = F(k, pw || R) [cite: 157]
     CryptoModule::Bytes pwBytes(password.begin(), password.end());
-    CryptoModule::Bytes kmaster = m_secureManager.ComputeMasterKey(pwBytes, feData.R);
+    CryptoModule::Bytes kmaster = TEEKeyModule::ComputeMasterKey(deviceKey, pwBytes, feData.R);
 
     // 4. 使用新接口：基于 K_master 确定性生成用户签名密钥对
     auto sigKeyPair = DeterministicECC::DeriveKeyPairFromSeed(kmaster);
@@ -128,20 +126,17 @@ ProtocolMessages::AuthResponse User::ProcessAuthChallenge(
     m_timestamp = challenge.timestamp;
     m_nonce = challenge.nonce;
     // ==========================================
-    // 1. 尝试解包硬件 PUF 凭证
+    // 1. 重新派生设备密钥 K（TEE/Keystore 或 PBKDF2）
     // ==========================================
-    std::string device_pin = GetDeviceHardwareID();
     std::string keystore_file = g_storagePath + "user_" + m_uid + "_keystore.dat";
     bool isKeystoreLoaded = false;
+    SecureBytes deviceKey;
     try {
-        isKeystoreLoaded = m_secureManager.UnwrapAndLoadCredential(m_uid, device_pin, keystore_file);
-        if (!isKeystoreLoaded) {
-            LOGE("❌ 硬件安全凭证(Keystore)解包失败！(大概率是PUF重构失败)");
-        } else {
-            LOGE("✅ 硬件安全凭证(Keystore)解包成功！");
-        }
+        deviceKey = TEEKeyModule::Derive(m_uid, keystore_file);
+        isKeystoreLoaded = true;
+        LOGE("✅ 设备密钥(TEEKeyModule)派生成功！");
     } catch(const std::exception& e) {
-        LOGE("❌ 硬件安全凭证解包异常: %s", e.what());
+        LOGE("❌ 设备密钥派生失败: %s", e.what());
     }
 
     // ==========================================
@@ -177,7 +172,7 @@ ProtocolMessages::AuthResponse User::ProcessAuthChallenge(
     if (isBioSuccess && isKeystoreLoaded) {
         try {
             CryptoModule::Bytes pwBytes(password.begin(), password.end());
-            SecureBytes kmasterSec = m_secureManager.ComputeMasterKey(pwBytes, R);
+            SecureBytes kmasterSec = TEEKeyModule::ComputeMasterKey(deviceKey, pwBytes, R);
             kmaster = kmasterSec;
             sigKeyPair = DeterministicECC::DeriveKeyPairFromSeed(kmasterSec);
         } catch (...) {

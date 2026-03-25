@@ -5,7 +5,7 @@
 #include "CryptoModule.h"
 #include "BioModule.h"
 #include "ProtocolMessages.h"
-#include "SecureCredentialManager.h"
+#include "TEEKeyModule.h"
 #include "SecureBytes.h"
 
 
@@ -53,13 +53,10 @@ public:
     // 获取协商成功的最终会话密钥
     CryptoModule::Bytes GetSessionKey() const { return m_sessionKey; }
 
-    // 实例化安全凭证管理器
-    SecureCredentialManager m_secureManager;
-
 private:
     std::string m_uid;
-    ClientCredential m_ask; // 存储在本地的凭证，不含私钥明文 
-    
+    ClientCredential m_ask; // 存储在本地的凭证，不含私钥明文
+
     // 认证过程中的临时会话状态（敏感数据使用 SecureBytes 自动擦除）
     CryptoModule::KeyPair m_tempDH;
     CryptoModule::Bytes m_peerDHPub;
@@ -72,14 +69,4 @@ private:
     //保存客户端生成的包，供最后一步验证服务器 tagS 使用
     CryptoModule::Bytes m_tau;
     CryptoModule::Bytes m_tagU;
-    
-    // ==========================================
-    // 模拟获取安卓设备底层硬件指纹 (Hardware-bound ID)
-    // ==========================================
-    std::string GetDeviceHardwareID() const {
-        // 在真实的 Android 移植中，这里会通过 JNI 调用获取系统层面的
-        // ANDROID_ID, 或者是 TEE 内部的 Hardware Unique Key (HUK)。
-        // 当前为 C++ 跨平台原型，我们返回一个与该物理设备强绑定的模拟特征字符串。
-        return "HW_FINGERPRINT_A1B2C3D4_" + m_uid;
-    }
 };

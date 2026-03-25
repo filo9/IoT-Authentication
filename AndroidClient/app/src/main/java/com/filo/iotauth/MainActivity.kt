@@ -5,6 +5,11 @@ import java.security.Signature
 import java.security.spec.X509EncodedKeySpec
 import android.util.Base64
 import android.os.Bundle
+import android.security.keystore.KeyGenParameterSpec
+import android.security.keystore.KeyProperties
+import javax.crypto.KeyGenerator
+import javax.crypto.Mac
+import java.security.KeyStore
 import android.view.View
 import android.widget.Button
 import android.widget.EditText
@@ -38,12 +43,13 @@ class MainActivity : AppCompatActivity() {
     // ==========================================
     external fun initDevice(uid: String, path: String): Boolean
     external fun generateRegisterPayload(pwd: String): String
-    // 修改 processAuthChallenge 的声明，增加 timestamp 和 nonceBase64
     external fun processAuthChallenge(uid: String, pwd: String, dhpubSBase64: String, serverSigMBase64: String, timestamp: Long, nonceBase64: String, isBioSuccess: Boolean): String
     external fun processServerResponse(jsonResponse: String): Boolean
     external fun finalizeAuth(tagSBase64: String, serverSigTagBase64: String): Boolean
     external fun encryptCommand(plaintextCmd: String): String
     external fun decryptResponse(ciphertextB64: String): String
+    // 注册 Keystore 回调到 C++ TEEKeyModule（由 JNI_OnLoad 时的 native 层持有）
+    external fun registerKeystoreCallback(): Boolean
 
     // ==========================================
     // 类成员变量 (全局UI控件与状态)
@@ -118,6 +124,67 @@ class MainActivity : AppCompatActivity() {
             println("======> Kotlin 层验签抛出异常: ${e.message} <======")
             e.printStackTrace()
             false
+        }
+    }
+
+    // ==========================================
+    // Android Keystore TEE 硬件密钥管理
+    // ==========================================
+
+    private val KEY_ALIAS = "iot_auth_device_key"
+    private val ANDROID_KEYSTORE = "AndroidKeyStore"
+
+    /**
+     * 确保 AndroidKeyStore 中存在硬件支持的 HmacSHA256 密钥。
+     * 若已存在则直接复用（幂等），不可导出，生命周期绑定设备。
+     */
+    private fun ensureKeystoreKey() {
+        val keyStore = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
+        if (keyStore.containsAlias(KEY_ALIAS)) return
+
+        val keyGenerator = KeyGenerator.getInstance(
+            KeyProperties.KEY_ALGORITHM_HMAC_SHA256,
+            ANDROID_KEYSTORE
+        )
+        keyGenerator.init(
+            KeyGenParameterSpec.Builder(
+                KEY_ALIAS,
+                KeyProperties.PURPOSE_SIGN
+            )
+                .setKeySize(256)
+                .build()
+        )
+        keyGenerator.generateKey()
+        println("======> TEE 设备密钥已生成并写入 AndroidKeyStore <======")
+    }
+
+    /**
+     * 使用 AndroidKeyStore 中的硬件密钥执行 HMAC-SHA256。
+     * 由 C++ TEEKeyModule 的 JNI 回调触发，data 为原始字节（Base64 编码后传入）。
+     * 返回 HMAC 结果的 Base64 字符串。
+     *
+     * 此方法由 native-lib.cpp 通过 JNI 反调，标注 @Suppress("unused") 防止被混淆器删除。
+     */
+    @Suppress("unused")
+    fun performKeystoreHmac(keyAlias: String, dataBase64: String): String {
+        return try {
+            val keyStore = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
+            val secretKey = keyStore.getKey(keyAlias, null)
+                ?: throw IllegalStateException("Keystore key '$keyAlias' not found")
+
+            val mac = Mac.getInstance("HmacSHA256")
+            mac.init(secretKey)
+
+            val data = Base64.decode(dataBase64, Base64.DEFAULT)
+            val result = mac.doFinal(data)
+
+            Base64.encodeToString(result, Base64.NO_WRAP).also {
+                println("======> TEE HMAC 完成，输出长度: ${result.size} 字节 <======")
+            }
+        } catch (e: Exception) {
+            println("======> TEE HMAC 失败: ${e.message} <======")
+            e.printStackTrace()
+            "" // 空字符串触发 C++ 侧降级到 PBKDF2
         }
     }
 
@@ -303,11 +370,29 @@ class MainActivity : AppCompatActivity() {
 
     private fun initDeviceInstance(uid: String): Boolean {
         val storagePath = applicationContext.filesDir.absolutePath
+
+        // 1. 确保 AndroidKeyStore 中存在硬件密钥（幂等）
+        try {
+            ensureKeystoreKey()
+        } catch (e: Exception) {
+            println("======> Keystore 密钥生成失败，将降级为 PBKDF2: ${e.message} <======")
+        }
+
+        // 2. 初始化 C++ User 对象
         val initSuccess = initDevice(uid, storagePath)
         if (!initSuccess) {
             tvResult.text = "C++ 引擎初始化失败，请检查 JNI 层。"
+            return false
         }
-        return initSuccess
+
+        // 3. 将 Kotlin performKeystoreHmac 注册为 C++ TEEKeyModule 的回调
+        //    C++ 侧会持有 JNIEnv + jobject 引用，后续 Enroll/Derive 时直接回调
+        val callbackRegistered = registerKeystoreCallback()
+        if (!callbackRegistered) {
+            println("======> Keystore 回调注册失败，TEEKeyModule 将使用 PBKDF2 降级路径 <======")
+        }
+
+        return true
     }
 
     private fun sendRegistrationRequest(jsonPayload: String) {

@@ -30,9 +30,8 @@ set(CORE_SOURCES
     src/Server.cpp
     src/User.cpp
     src/BioModule.cpp
-    src/SecureCredentialManager.cpp
+    src/TEEKeyModule.cpp
     src/SecureRecordLayer.cpp
-    src/PUFModule.cpp
 )
 
 # ---------------------------------------------------------
@@ -96,35 +95,4 @@ target_link_libraries(test_batch_vault_v2 PRIVATE
     OpenSSL::Crypto
     ${GMP_LIBRARY}
     sqlite3
-)
-
-# ---------------------------------------------------------
-# 7. 后量子 (PQC) 网关服务器 — ML-KEM-768 替代 ECDH
-# ---------------------------------------------------------
-# PQC 核心源码集合：复用原有模块 + 新增 PQC 专用模块
-set(PQC_SOURCES
-    src/ReedSolomon.cpp
-    src/FuzzyVault.cpp
-    src/CryptoModule.cpp
-    src/CryptoModulePQC.cpp
-    src/DeterministicECC.cpp
-    src/ServerPQC.cpp
-    src/UserPQC.cpp
-    src/BioModule.cpp
-    src/SecureCredentialManager.cpp
-    src/SecureRecordLayer.cpp
-    src/PUFModule.cpp
-)
-
-add_executable(iot_gateway_server_pqc
-    src/main_server_pqc.cpp
-    ${PQC_SOURCES}
-)
-
-target_link_libraries(iot_gateway_server_pqc PRIVATE
-    OpenSSL::SSL
-    OpenSSL::Crypto
-    ${GMP_LIBRARY}
-    sqlite3
-    pthread
 )

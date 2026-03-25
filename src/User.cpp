@@ -17,15 +17,14 @@ ProtocolMessages::RegistrationRequest User::GenerateRegistrationRequest(
     // 1. 生物特征处理: R, P <- FuzzyExtractor.Gen(bio) 
     auto feData = BioModule::Gen(biometric);
 
-    // 2. PRF密钥生成: k <- PUF(deviceUID)
-    // 提取设备硬件指纹作为 PUF challenge，生成物理不可克隆的密钥
-    std::string device_pin = GetDeviceHardwareID();
+    // 2. 设备密钥派生: K <- TEEKeyModule.Enroll(deviceUID)
+    // 使用 PBKDF2(deviceUID, random_salt) 模拟 TEE/TPM 硬件绑定设备密钥
     std::string keystore_file = "user_" + m_uid + "_keystore.dat";
-    m_secureManager.GenerateAndWrapCredential(m_uid, device_pin, keystore_file);
+    SecureBytes deviceKey = TEEKeyModule::Enroll(m_uid, keystore_file);
 
-    // 3. 主密钥派生: kmaster = F(k, pw || R) [cite: 157]
+    // 3. 主密钥派生: kmaster = HMAC-SHA256(K, pw || R) [cite: 157]
     CryptoModule::Bytes pwBytes(password.begin(), password.end());
-    SecureBytes kmaster = m_secureManager.ComputeMasterKey(pwBytes, feData.R);
+    SecureBytes kmaster = TEEKeyModule::ComputeMasterKey(deviceKey, pwBytes, feData.R);
 
     // 4. 使用新接口：基于 K_master 确定性生成用户签名密钥对
     auto sigKeyPair = DeterministicECC::DeriveKeyPairFromSeed(kmaster);
@@ -105,17 +104,13 @@ ProtocolMessages::AuthResponse User::ProcessAuthChallenge(
         throw std::runtime_error("Biometric mismatch! Authentication aborted.");
     }
 
-    // 3. 恢复主密钥 kmaster [cite: 183]
-    // 使用 PUF 重构设备密钥 k
-    std::string device_pin = GetDeviceHardwareID();
+    // 3. 重新派生设备密钥 K 并计算主密钥 kmaster [cite: 183]
     std::string keystore_file = "user_" + m_uid + "_keystore.dat";
-    if (!m_secureManager.UnwrapAndLoadCredential(m_uid, device_pin, keystore_file)) {
-        throw std::runtime_error("PUF reconstruction or Device PIN incorrect!");
-    }
+    SecureBytes deviceKey = TEEKeyModule::Derive(m_uid, keystore_file);
 
     // 然后再进行 kmaster 的计算：
     CryptoModule::Bytes pwBytes(password.begin(), password.end());
-    SecureBytes kmaster = m_secureManager.ComputeMasterKey(pwBytes, R);
+    SecureBytes kmaster = TEEKeyModule::ComputeMasterKey(deviceKey, pwBytes, R);
 
     // 4. 真正通过 kmaster 确定性重构签名密钥对！(无私钥存储落地)
     auto sigKeyPair = DeterministicECC::DeriveKeyPairFromSeed(kmaster);
